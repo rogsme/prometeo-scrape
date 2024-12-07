@@ -1,0 +1,246 @@
+#+TITLE: README
+#+PROPERTY: header-args :tangle script.py
+#+AUTHOR: Roger Gonzalez
+#+DATE: 02-08-2021
+
+This script was created using [[https://en.wikipedia.org/wiki/Literate_programming][literate programming]], with Emacs's [[https://orgmode.org/][org-mode]]. The entire script was written in this file and the code blocks were automatically "tangled" into the ~script.py~ file.
+
+* Table of contents :toc:
+:PROPERTIES:
+:ID:       6b5dc287-ac66-4b26-b8e0-e7d0ac567369
+:END:
+- [[#introduction][Introduction]]
+  - [[#challenges][Challenges]]
+  - [[#tldr][TL;DR]]
+- [[#code-explanation][Code explanation]]
+  - [[#libraries-used][Libraries used]]
+  - [[#constants][Constants]]
+  - [[#main-code][Main code]]
+  - [[#execution][Execution]]
+  - [[#run][Run]]
+- [[#considerations][Considerations]]
+
+* Introduction
+:PROPERTIES:
+:ID:       fa8f62ae-0b70-4425-81ed-0bec3908c117
+:END:
+This is a code test for "[[https://prometeoapi.com/][Prometeo]]". Task list [3/3]
+- [X] Get the API key from the dashboard
+- [X] Get the first name and last name from the config
+- [X] Get the request history from the history
+
+** Challenges
+:PROPERTIES:
+:ID:       95148491-aa6a-4b31-864c-74745e0c840a
+:END:
+- Can't use browser automatization libraries like Selenium
+** TL;DR
+:PROPERTIES:
+:ID:       de00cb05-ce58-4eca-9c58-0c60cd77609d
+:END:
+- Install dependencies in a virtual env
+  #+begin_src bash :tangle no
+$ cd /project/location
+$ virtualenv .venv
+$ source .venv/bin/activate
+$ pip install -r requirements.txt
+  #+end_src
+
+- To run:
+  #+begin_src bash :tangle no
+$ (.venv) python script.py
+  #+end_src
+
+- To run with custom username/password
+  #+begin_src bash :tangle no
+$ (.venv) python script.py username password
+  #+end_src
+
+- To get help
+  #+begin_src bash :tangle no
+$ (.venv) python script.py -h
+  #+end_src
+* Code explanation
+:PROPERTIES:
+:ID:       8246cfe7-37e1-4ad6-8a09-d8ca4e83a589
+:END:
+** Libraries used
+:PROPERTIES:
+:ID:       40c56db9-0fb2-4cde-8099-9575552d73cb
+:END:
+Since I can't use Selenium or other automatization libraries, I went simple: [[https://beautiful-soup-4.readthedocs.io/en/latest/][BeautifulSoup]] and [[https://docs.python-requests.org/en/master/][requests]]. We import datetimes to know the current month/year for the history and sys to read arguments from the command line.
+
+#+begin_src python
+#!/usr/bin/env python3
+
+import sys
+from datetime import datetime
+
+import requests
+from bs4 import BeautifulSoup
+#+end_src
+
+** Constants
+:PROPERTIES:
+:ID:       ea168322-8699-4edf-b464-43668ecb3aed
+:END:
+I defined some constants to have as default. I could have used env vars, but it was a little overkill for this test. In production, I would definitely use environment variables.
+
+#+begin_src python
+TODAY = datetime.now()
+MONTH = TODAY.month
+YEAR = TODAY.year
+
+
+LOGIN_URL = "https://prometeoapi.com/dashboard/login/"
+DASHBOARD_URL = "https://prometeoapi.com/dashboard/"
+CONFIG_URL = "https://prometeoapi.com/dashboard/settings/"
+CURRENT_MONTH_HISTORY_URL = f"https://prometeoapi.com/dashboard/filter_requests/?user_id=&month={MONTH}&year={YEAR}"
+USERNAME = "prueba-dev@prometeoapi.com"
+PASSWORD = "thePasswordHere"
+#+end_src
+
+** Main code
+:PROPERTIES:
+:ID:       50451e2b-94bb-41f1-bb41-4c5728027d0b
+:END:
+To avoid code repetition and make the code more readable, I created a class to integrate all the functionality we want with the ~requests~ client
+
+First, we set the ~init~ of the class
+#+begin_src python
+class DashboardInfo:
+    """
+    A class to extract all the information from the dashboard
+    """
+
+    def __init__(self, username, password):
+        super(DashboardInfo, self).__init__()
+
+        self.username = username
+        self.password = password
+
+        self.client, self.data = self._generate_client()
+#+end_src
+
+Then, our first private function: ~_generate_client~. We are going to use this function to provide our class with an authenticated client that includes our ~CSRFMiddleware~ and ~sessionId~ cookies
+#+begin_src python
+    def _generate_client(self):
+        """
+        Creates a new authenticated REQUESTS client
+        """
+
+        client = requests.session()
+
+        client.get(LOGIN_URL)
+
+        if "csrftoken" in client.cookies:
+            csrftoken = client.cookies["csrftoken"]
+
+        data = {
+            "username": self.username,
+            "password": self.password,
+            "csrfmiddlewaretoken": csrftoken,
+        }
+
+        request = client.post(LOGIN_URL, data=data, headers=dict(Referer=LOGIN_URL))
+
+        if request.url == LOGIN_URL:
+            raise requests.HTTPError()
+
+        return client, data
+#+end_src
+
+Two ~_get~ and ~_post~ functions to improve readability
+#+begin_src python
+    def _get(self, url):
+        return self.client.get(url, data=self.data)
+
+    def _post(self, url):
+        return self.client.post(url, data=self.data)
+#+end_src
+
+And finally, our functions that go through the HTML and get the data we need. The first one is ~get_api_key~, which goes to the dashboard, looks for the ~span~ with the class ~pui-f-ubuntu-mono~ and extracts the text to return the full API key
+#+begin_src python
+    def get_api_key(self, url=DASHBOARD_URL):
+        dashboard = self._get(DASHBOARD_URL)
+        dashboard_soup = BeautifulSoup(dashboard.text, features="lxml")
+        return dashboard_soup.find("span", {"class": "pui-f-ubuntu-mono"}).text.strip()
+#+end_src
+
+~get_name_and_last_name~ goes to the config page, looks for the ~first_name~ and ~last_name~ inputs, gets the values and returns a dict with both variables
+#+begin_src python
+    def get_name_and_last_name(self, url=CONFIG_URL):
+        config = self._get(CONFIG_URL)
+        config_soup = BeautifulSoup(config.text, features="lxml")
+
+        first_name = config_soup.find("input", {"name": "first_name"})["value"]
+        last_name = config_soup.find("input", {"name": "last_name"})["value"]
+        return dict(first_name=first_name, last_name=last_name)
+#+end_src
+
+Finally, ~get_history~ goes directly to the API and gets a ~JSON~ containing the history for the current month.
+#+begin_src python
+    def get_history(self, url=CURRENT_MONTH_HISTORY_URL):
+        history = self._get(CURRENT_MONTH_HISTORY_URL)
+        return history.json()
+#+end_src
+** Execution
+:PROPERTIES:
+:ID:       33b9bc36-96d5-4164-870a-58dbff0d2be1
+:END:
+We come to the fun part: Running it all!
+
+If the first argument is ~--help~ or ~-h~, show the help message
+#+begin_src python
+if __name__ == "__main__":
+    args = sys.argv
+    if len(args) == 2 and args[1] in ["--help", "-h"]:
+        print("Usage: script <username> <password>")
+#+end_src
+
+If not, then continue with the execution. We first try to get the username/password from ~sys.argv~. If they are found, we execute the code with the credentials provided, if not we use the default username/password we defined on the constants
+#+begin_src python
+    else:
+        username, password = [USERNAME, PASSWORD]
+
+        if len(sys.argv) == 3:
+            username, password = args[1:]
+#+end_src
+
+And finally, we instanciate the class with the correct username/password combo and generate the response. Some small error handling is added as well.
+#+begin_src python
+        try:
+            info = DashboardInfo(username=username, password=password)
+
+            return_data = {
+                **info.get_name_and_last_name(),
+                "api_key": info.get_api_key(),
+                "history": info.get_history(),
+            }
+
+            print(return_data)
+        except requests.exceptions.HTTPError:
+            print("Username and password are incorrect")
+        except Exception:
+            print("Something happened with the request. Try again later")
+#+end_src
+** Run
+:PROPERTIES:
+:ID:       0a39893e-8e8c-4c44-9123-1341d4e9a67c
+:END:
+On your terminal, run
+#+begin_src bash :tangle no
+$ (.venv) python script.py
+#+end_src
+
+or
+#+begin_src bash :tangle no
+$ (.venv) python script.py username password
+#+end_src
+
+* Considerations
+:PROPERTIES:
+:ID:       cdfd9fda-8d60-41a6-b46d-61a6d7956716
+:END:
+- We should consider named command line arguments (something like ~script.py -u username -p password~)
+- We need to add unit tests
